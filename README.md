@@ -37,6 +37,14 @@ Create the GitHub OIDC provider in the AWS account first. The AWS provider confi
 
 The module does not create DNS records or a WAF policy. A satellite role only exists for a key in `satellite_github_subjects`; registry edits do not change these permissions. Update the module inputs separately when repository identity or the intended site boundary changes.
 
+## Optional Cloudflare DNS and ACM composition
+
+The root AWS module remains AWS-only and keeps its generic custom-domain path: configure `aliases` and `acm_certificate_arn`, then manage DNS and the `us-east-1` certificate in your own Terraform configuration. Callers that use the default CloudFront hostname need no Cloudflare provider or certificate.
+
+For the selected AWS verification hostname, [`modules/cloudflare-dns-acm`](modules/cloudflare-dns-acm) composes this module with a Cloudflare DNS zone and an ACM certificate in `us-east-1`. It owns only the supplied non-apex hostname, its ACM DNS-validation CNAMEs, and a DNS-only CNAME to the resulting CloudFront distribution. It does not create a Route 53 zone or records, proxy traffic through Cloudflare, or change the apex delivery path. The [consumer example](examples/cloudflare-dns-acm-consumer) shows the required default and `us-east-1` AWS providers and the Cloudflare provider.
+
+The composition is a separate source path with an additional Cloudflare provider requirement. Existing AWS-only callers do not inherit it. See its README for record import, certificate replacement, provider permissions, and plan review guidance.
+
 Satellite IAM role names include the full site ID when they fit AWS's 64-character limit. Longer IDs use a stable hash suffix; `satellite_role_arns` remains keyed by the full site ID either way.
 
 The CloudFront cache policies bound shared-cache freshness at 60 seconds for `/_indexes/*`, 300 seconds for `/_artifacts/*`, zero for the shell and `/_previews/*`, and honor per-object `Cache-Control` under `/assets/*` with a one-year maximum. Fixed-name assets revalidate; content-hashed assets can use the one-year immutable policy. A private S3 403 or 404 for a missing projection object maps to a 404 response. `/_errors/not-found.html` is a small managed text page used for that response.
