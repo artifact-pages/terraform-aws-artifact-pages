@@ -1,6 +1,6 @@
 # Optional AWS + Cloudflare DNS and ACM composition
 
-This child module composes the AWS deployment module with DNS-only Cloudflare records for one custom hostname. It is intended for the AWS verification branch (`aws.artifact-pages.dev`). The root AWS module only requires the AWS provider and continues to support the default CloudFront hostname or a caller-managed certificate and DNS configuration.
+This child module composes the AWS deployment module with DNS-only Cloudflare records for one caller-selected custom hostname. It accepts any valid non-apex hostname beneath the supplied Cloudflare zone. The root AWS module only requires the AWS provider and continues to support the default CloudFront hostname or a caller-managed certificate and DNS configuration.
 
 The caller must configure the default AWS provider in `aws_region`, an `aws.us_east_1` alias, and the Cloudflare provider. The alias creates and validates the ACM viewer certificate in `us-east-1`, as [CloudFront requires](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/cnames-and-https-requirements.html). The module creates DNS validation records first and passes the validated certificate ARN and the same hostname to the AWS module's `aliases` and `acm_certificate_arn` inputs. This dependency makes certificate validation complete before the CloudFront distribution can use the alias.
 
@@ -25,11 +25,11 @@ The module returns the root AWS deployment outputs plus `hostname`, `certificate
 
 ## Existing records and replacement
 
-This module takes Terraform ownership of its Cloudflare DNS records. If a matching record is already managed by another Terraform state, coordinate ownership before applying. For an existing record that should move into this state, import it instead of creating a duplicate. With Cloudflare provider 5.x, the import ID is `<zone_id>/<dns_record_id>`. Assuming the caller's module block is named `artifact_pages` and its hostname is `aws.artifact-pages.dev`:
+This module takes Terraform ownership of its Cloudflare DNS records. If a matching record is already managed by another Terraform state, coordinate ownership before applying. For an existing record that should move into this state, import it instead of creating a duplicate. With Cloudflare provider 5.x, the import ID is `<zone_id>/<dns_record_id>`. Assuming the caller's module block is named `artifact_pages` and its hostname is `www.example.com`:
 
 ```sh
 terraform import 'module.artifact_pages.cloudflare_dns_record.distribution' '<zone_id>/<dns_record_id>'
-terraform import 'module.artifact_pages.cloudflare_dns_record.acm_validation["aws.artifact-pages.dev"]' '<zone_id>/<dns_record_id>'
+terraform import 'module.artifact_pages.cloudflare_dns_record.acm_validation["www.example.com"]' '<zone_id>/<dns_record_id>'
 ```
 
 The ACM validation address uses the certificate validation option's domain name as its `for_each` key. Replace the example key with the configured hostname, and confirm the actual key and record IDs in the plan and Cloudflare dashboard before importing. The [Cloudflare provider import reference](https://github.com/cloudflare/terraform-provider-cloudflare/blob/main/docs/resources/dns_record.md#import) documents the provider ID format.
@@ -38,15 +38,15 @@ The ACM certificate uses `create_before_destroy`; a hostname change requests and
 
 ## Real-plan review checklist
 
-Before an approved plan for the selected `aws.artifact-pages.dev` target, verify the caller's AWS default provider points to the intended account and `aws_region`, while `aws.us_east_1` points to the same account in `us-east-1`. Confirm the Cloudflare token and `cloudflare_domain.zone_id` refer to the existing `artifact-pages.dev` zone. Review the full plan and check that:
+Before an approved plan for a configured hostname, verify the caller's AWS default provider points to the intended account and `aws_region`, while `aws.us_east_1` points to the same account in `us-east-1`. Confirm the Cloudflare token and `cloudflare_domain.zone_id` refer to the zone identified by `cloudflare_domain.zone_name`. Review the full plan and check that:
 
-- The requested ACM certificate's domain is exactly `aws.artifact-pages.dev`, and the certificate validation waiter completes before the CloudFront distribution uses it.
+- The requested ACM certificate's domain is exactly the normalized `cloudflare_domain.hostname`, and the certificate validation waiter completes before the CloudFront distribution uses it.
 - The ACM validation records are CNAMEs in the selected Cloudflare zone with `proxied = false` and automatic TTL.
-- There is one distribution CNAME for `aws.artifact-pages.dev`, it points to the planned CloudFront distribution hostname, and it has `proxied = false` and automatic TTL.
-- The CloudFront alias is exactly `aws.artifact-pages.dev` and its viewer certificate ARN is the validated `us-east-1` certificate.
+- There is one distribution CNAME for `cloudflare_domain.hostname`, it points to the planned CloudFront distribution hostname, and it has `proxied = false` and automatic TTL.
+- The CloudFront alias is exactly `cloudflare_domain.hostname` and its viewer certificate ARN is the validated `us-east-1` certificate.
 - The plan contains no Route 53 resources, apex record, unrelated Cloudflare records, or unreviewed AWS replacements and deletions.
 
-After a separately approved apply, wait for ACM `ISSUED` and CloudFront `Deployed`, then verify the DNS-only CNAME resolves to the distribution hostname, TLS succeeds for `aws.artifact-pages.dev`, and the browser can load the deployed site. These checks are live T15 proof; the local validation script does not perform them.
+After a separately approved apply, wait for ACM `ISSUED` and CloudFront `Deployed`, then verify the DNS-only CNAME resolves to the distribution hostname, TLS succeeds for `cloudflare_domain.hostname`, and the browser can load the deployed site. These checks are live T15 proof; the local validation script does not perform them.
 
 ## Validation boundary
 

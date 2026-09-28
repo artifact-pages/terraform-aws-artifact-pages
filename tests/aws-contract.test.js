@@ -371,6 +371,8 @@ test('Cloudflare records are DNS-only, scoped to the supplied zone, and never cr
 test('composition docs include a real-plan review checklist and preserve live proof as T15', async () => {
   const readme = await readFile(new URL('../modules/cloudflare-dns-acm/README.md', import.meta.url), 'utf8')
   assert.match(readme, /## Real-plan review checklist/u)
+  assert.match(readme, /accepts any valid non-apex hostname beneath the supplied Cloudflare zone/u)
+  assert.match(readme, /cloudflare_domain\.hostname/u)
   assert.match(readme, /certificate validation waiter completes before the CloudFront distribution/u)
   assert.match(readme, /no Route 53 resources, apex record, unrelated Cloudflare records/u)
   assert.match(readme, /live T15 proof/u)
