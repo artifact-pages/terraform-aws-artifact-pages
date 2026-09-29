@@ -5,19 +5,19 @@ variable "aws_region" {
 }
 
 variable "bucket_name" {
-  description = "Unique S3 bucket name for this deployment."
+  description = "Optional S3 bucket name override; omit to use the module's deterministic AWS provider account-and-region default."
   type        = string
-  default     = "artifact-pages-aws-domain-example-0001"
+  default     = null
 }
 
 variable "preview_retention_days" {
-  description = "Whole-day lifecycle retention required by the current CLI/module contract."
+  description = "Whole-day preview retention enforced by S3 lifecycle; this stays in Terraform and is not included in the CLI deployment config."
   type        = number
   default     = 1
 }
 
 variable "github_oidc_provider_arn" {
-  description = "Existing GitHub Actions OIDC provider ARN in the AWS account."
+  description = "Existing GitHub Actions OIDC provider ARN in the AWS provider target account."
   type        = string
   default     = "arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"
 }
@@ -29,7 +29,7 @@ variable "admin_github_subjects" {
 }
 
 variable "cloudflare_zone_id" {
-  description = "Existing Cloudflare zone ID for artifact-pages.dev."
+  description = "Existing Cloudflare zone ID."
   type        = string
   default     = "11111111111111111111111111111111"
 }
@@ -37,11 +37,11 @@ variable "cloudflare_zone_id" {
 variable "cloudflare_zone_name" {
   description = "Existing Cloudflare zone name."
   type        = string
-  default     = "artifact-pages.dev"
+  default     = "example.com"
 }
 
 variable "aws_hostname" {
   description = "AWS verification hostname below the Cloudflare zone."
   type        = string
-  default     = "aws.artifact-pages.dev"
+  default     = "aws.example.com"
 }

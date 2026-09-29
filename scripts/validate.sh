@@ -8,74 +8,62 @@ if [[ "$terraform_version" != "1.9.8" ]]; then
   exit 1
 fi
 
+module_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+apprepo_dir="${ARTIFACT_PAGES_APPREPO_DIR:-$module_root/../git-artifact-pages}"
+apprepo_dir="$(cd "$apprepo_dir" && pwd)"
+if [[ ! -f "$apprepo_dir/go.mod" ]]; then
+  printf 'Artifact Pages OSS checkout not found; set ARTIFACT_PAGES_APPREPO_DIR.\n' >&2
+  exit 1
+fi
+
 export TF_PLUGIN_CACHE_DIR="${TF_PLUGIN_CACHE_DIR:-/tmp/terraform-provider-cache}"
-mkdir -p "$TF_PLUGIN_CACHE_DIR"
+mkdir -p "$TF_PLUGIN_CACHE_DIR" "$apprepo_dir/.local"
+contract_helper_dir="$(mktemp -d "$apprepo_dir/.local/terraform-aws-contract.XXXXXX")"
+cp "$module_root/tests/cli-contract/validator.go" "$contract_helper_dir/main.go"
+export TF_VAR_apprepo_dir="$apprepo_dir"
+export TF_VAR_cli_contract_helper="$contract_helper_dir/main.go"
+
+trap 'rm -r "$contract_helper_dir"' EXIT
 
 "$terraform_bin" fmt -check -recursive
 "$terraform_bin" init -backend=false -input=false -lockfile=readonly
 "$terraform_bin" validate
 "$terraform_bin" -chdir=examples/local-consumer init -backend=false -input=false -lockfile=readonly
 "$terraform_bin" -chdir=examples/local-consumer validate
+"$terraform_bin" -chdir=examples/cloudflare-dns-acm-consumer init -backend=false -input=false -lockfile=readonly
+"$terraform_bin" -chdir=examples/cloudflare-dns-acm-consumer validate
+"$terraform_bin" -chdir=tests/cli-contract init -backend=false -input=false -lockfile=readonly
+"$terraform_bin" -chdir=tests/cli-contract test -no-color
+"$terraform_bin" -chdir=tests/cli-contract-mismatch init -backend=false -input=false -lockfile=readonly
+set +e
+mismatch_output=$("$terraform_bin" -chdir=tests/cli-contract-mismatch test -no-color 2>&1)
+mismatch_status=$?
+set -e
+if [[ "$mismatch_status" -eq 0 ]] || ! printf '%s' "$mismatch_output" | rg -q 'The AWS provider account must match the account ID in'; then
+  printf '%s\n' "$mismatch_output" >&2
+  printf 'Expected the mocked AWS account mismatch to stop the Terraform plan.\n' >&2
+  exit 1
+fi
+printf 'Mocked AWS provider/OIDC account mismatch was rejected during planning.\n'
+
+"$terraform_bin" -chdir=tests/cloudflare-dns-acm-account init -backend=false -input=false -lockfile=readonly
+check_wrapper_account_mismatch() {
+  local test_file="$1"
+  local mismatch_output
+  local mismatch_status
+
+  set +e
+  mismatch_output=$("$terraform_bin" -chdir=tests/cloudflare-dns-acm-account test -no-color -filter="$test_file" 2>&1)
+  mismatch_status=$?
+  set -e
+  if [[ "$mismatch_status" -eq 0 ]] || ! printf '%s' "$mismatch_output" | rg -q 'Both AWS provider accounts must match the OIDC account\.'; then
+    printf '%s\n' "$mismatch_output" >&2
+    printf 'Expected mocked wrapper account mismatch to stop plan in %s.\n' "$test_file" >&2
+    exit 1
+  fi
+  printf 'Mocked AWS account mismatch rejected by the Cloudflare/ACM wrapper: %s\n' "$test_file"
+}
+check_wrapper_account_mismatch default-provider-mismatch.tftest.hcl
+check_wrapper_account_mismatch us-east-1-provider-mismatch.tftest.hcl
+
 node --test tests/*.test.js
-
-temporary_root="$(mktemp -d /tmp/artifact-pages-aws-validation.XXXXXX)"
-trap 'rm -rf "$temporary_root"' EXIT
-mkdir -p "$temporary_root/module/examples/local-consumer"
-cp main.tf variables.tf outputs.tf routes.js trusted-html-policy.js versions.tf .terraform.lock.hcl "$temporary_root/module/"
-cp examples/local-consumer/main.tf \
-  examples/local-consumer/variables.tf \
-  examples/local-consumer/outputs.tf \
-  examples/local-consumer/versions.tf \
-  examples/local-consumer/terraform.tfvars.example \
-  examples/local-consumer/.terraform.lock.hcl \
-  "$temporary_root/module/examples/local-consumer/"
-perl -0pi -e 's/provider "aws" \{\n  region = var\.aws_region\n\}/provider "aws" {\n  region                      = var.aws_region\n  skip_credentials_validation = true\n  skip_metadata_api_check     = true\n  skip_region_validation      = true\n  skip_requesting_account_id  = true\n}/' "$temporary_root/module/examples/local-consumer/versions.tf"
-if ! rg -q 'skip_credentials_validation\s*=\s*true' "$temporary_root/module/examples/local-consumer/versions.tf"; then
-  printf 'Failed to prepare offline-only provider checks in the temporary validation copy.\n' >&2
-  exit 1
-fi
-
-"$terraform_bin" -chdir="$temporary_root/module" init -backend=false -input=false -lockfile=readonly
-"$terraform_bin" -chdir="$temporary_root/module/examples/local-consumer" init -backend=false -input=false
-AWS_ACCESS_KEY_ID=offline-validation AWS_SECRET_ACCESS_KEY=offline-validation AWS_EC2_METADATA_DISABLED=true \
-  "$terraform_bin" -chdir="$temporary_root/module/examples/local-consumer" plan -refresh=false -input=false -lock=false -var-file=terraform.tfvars.example -out="$temporary_root/aws.plan"
-"$terraform_bin" -chdir="$temporary_root/module/examples/local-consumer" show -json "$temporary_root/aws.plan" |
-  node -e 'let input="";process.stdin.on("data",chunk=>input+=chunk).on("end",()=>{const plan=JSON.parse(input);const changes=plan.resource_changes||[];const counts=changes.reduce((result,item)=>{for(const action of item.change.actions)result[action]=(result[action]||0)+1;return result},{}) ;if(changes.length===0||changes.some(item=>item.change.actions.some(action=>action!=="create"))){process.stderr.write(JSON.stringify({resourceCount:changes.length,counts},null,2)+"\n");process.exit(1)}process.stdout.write(JSON.stringify({resourceCount:changes.length,counts},null,2)+"\n")})'
-
-mkdir -p "$temporary_root/module/modules" "$temporary_root/module/examples/cloudflare-dns-acm-consumer"
-cp -R modules/cloudflare-dns-acm "$temporary_root/module/modules/"
-cp examples/cloudflare-dns-acm-consumer/main.tf \
-  examples/cloudflare-dns-acm-consumer/variables.tf \
-  examples/cloudflare-dns-acm-consumer/outputs.tf \
-  examples/cloudflare-dns-acm-consumer/versions.tf \
-  examples/cloudflare-dns-acm-consumer/terraform.tfvars.example \
-  examples/cloudflare-dns-acm-consumer/.terraform.lock.hcl \
-  "$temporary_root/module/examples/cloudflare-dns-acm-consumer/"
-perl -0pi -e 's/^(\s*region\s*=\s*(?:var\.aws_region|"us-east-1"))$/$1\n  skip_credentials_validation = true\n  skip_metadata_api_check     = true\n  skip_region_validation      = true\n  skip_requesting_account_id  = true/mg' \
-  "$temporary_root/module/examples/cloudflare-dns-acm-consumer/versions.tf"
-skip_count="$(rg -c 'skip_credentials_validation\s*=\s*true' "$temporary_root/module/examples/cloudflare-dns-acm-consumer/versions.tf")"
-if [[ "$skip_count" != "2" ]]; then
-  printf 'Failed to prepare offline-only checks for both AWS providers in the temporary Cloudflare composition copy.\n' >&2
-  exit 1
-fi
-
-"$terraform_bin" -chdir="$temporary_root/module/examples/cloudflare-dns-acm-consumer" init -backend=false -input=false -lockfile=readonly
-"$terraform_bin" -chdir="$temporary_root/module/examples/cloudflare-dns-acm-consumer" validate
-AWS_ACCESS_KEY_ID=offline-validation AWS_SECRET_ACCESS_KEY=offline-validation AWS_EC2_METADATA_DISABLED=true CLOUDFLARE_API_TOKEN=offline-validation \
-  "$terraform_bin" -chdir="$temporary_root/module/examples/cloudflare-dns-acm-consumer" plan -refresh=false -input=false -lock=false -var-file=terraform.tfvars.example -out="$temporary_root/aws-cloudflare.plan"
-"$terraform_bin" -chdir="$temporary_root/module/examples/cloudflare-dns-acm-consumer" show -json "$temporary_root/aws-cloudflare.plan" |
-  node -e 'let input="";process.stdin.on("data",chunk=>input+=chunk).on("end",()=>{const plan=JSON.parse(input);const changes=plan.resource_changes||[];const counts=changes.reduce((result,item)=>{for(const action of item.change.actions)result[action]=(result[action]||0)+1;return result},{});const required=["aws_acm_certificate","aws_acm_certificate_validation","aws_cloudfront_distribution","cloudflare_dns_record"];const missing=required.filter(type=>!changes.some(item=>item.type===type));const cloudflareRecords=changes.filter(item=>item.type==="cloudflare_dns_record");const forbidden=changes.filter(item=>item.type.startsWith("aws_route53_")||item.type==="cloudflare_zone");if(changes.length===0||missing.length||cloudflareRecords.length!==2||forbidden.length||changes.some(item=>item.change.actions.some(action=>action!=="create"))){process.stderr.write(JSON.stringify({resourceCount:changes.length,counts,missing,cloudflareRecordCount:cloudflareRecords.length,forbidden:forbidden.map(item=>item.address)},null,2)+"\n");process.exit(1)}process.stdout.write(JSON.stringify({resourceCount:changes.length,counts,required,cloudflareRecordCount:cloudflareRecords.length},null,2)+"\n")})'
-
-for invalid_hostname in artifact-pages.dev unrelated.example.net; do
-  invalid_plan_log="$temporary_root/invalid-hostname-${invalid_hostname//./-}.log"
-  if AWS_ACCESS_KEY_ID=offline-validation AWS_SECRET_ACCESS_KEY=offline-validation AWS_EC2_METADATA_DISABLED=true CLOUDFLARE_API_TOKEN=offline-validation \
-    "$terraform_bin" -chdir="$temporary_root/module/examples/cloudflare-dns-acm-consumer" plan -refresh=false -input=false -lock=false -var-file=terraform.tfvars.example -var="aws_hostname=$invalid_hostname" >"$invalid_plan_log" 2>&1; then
-    printf 'Expected invalid Cloudflare hostname to fail validation: %s\n' "$invalid_hostname" >&2
-    exit 1
-  fi
-  if ! rg -q 'cloudflare_domain must contain a 32-character zone ID' "$invalid_plan_log"; then
-    cat "$invalid_plan_log" >&2
-    printf 'Invalid hostname failed for a reason other than the Cloudflare domain boundary: %s\n' "$invalid_hostname" >&2
-    exit 1
-  fi
-done

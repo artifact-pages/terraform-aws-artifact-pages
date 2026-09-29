@@ -107,7 +107,6 @@ test('AWS deployment keeps the S3 origin private behind signed CloudFront OAC', 
 test('AWS deployment maps the logical app and content paths to bounded cache policies', async () => {
   const behaviors = block(main, '  cache_behaviors = {')
   for (const [name, path, policy] of [
-    ['control', '/_control/*', 'no_store'],
     ['indexes', '/_indexes/*', 'indexes'],
     ['artifacts', '/_artifacts/*', 'artifacts'],
     ['previews', '/_previews/*', 'no_store'],
@@ -133,9 +132,7 @@ test('AWS deployment maps the logical app and content paths to bounded cache pol
   }
 
   const routeFunction = await readFile(new URL('../routes.js', import.meta.url), 'utf8')
-  assert.match(routeFunction, /uri === "\/_control" \|\| uri\.indexOf\("\/_control\/"\) === 0/u)
-  assert.match(routeFunction, /statusCode: 404/u)
-  assert.match(routeFunction, /"cache-control": \{ value: "no-store" \}/u)
+  assert.doesNotMatch(routeFunction, /uri === "\/_control"|uri\.indexOf\("\/_control\/"\)/u)
   assert.match(routeFunction, /request\.uri = "\/index\.html"/u)
 })
 
@@ -198,9 +195,32 @@ test('README lists every public input and output and explains root-state migrati
   ]) {
     assert.ok(readme.includes(`| \`${name}\` |`), `README output table must include ${name}`)
   }
+  assert.match(block(outputs, 'output "bucket_name"'), /value\s*=\s*aws_s3_bucket\.origin\.bucket/u)
   assert.match(readme, /former OSS `infra\/aws` directory was a root Terraform configuration/u)
   assert.match(readme, /module\.artifact_pages\.aws_s3_bucket\.origin/u)
   assert.match(readme, /terraform state mv/u)
+  assert.match(readme, /artifact-pages-<AWS provider account ID>-<AWS region>/u)
+  assert.match(readme, /read-only AWS identity lookup/u)
+})
+
+test('default bucket name is deterministic from the AWS provider account and region', () => {
+  assert.match(variables, /variable "bucket_name"\s*\{[\s\S]*?default\s*=\s*null/u)
+  assert.match(variables, /variable "github_oidc_provider_arn"[\s\S]*?12-digit account ID/u)
+  assert.match(main, /data "aws_caller_identity" "current"/u)
+  assert.match(main, /aws_account_id\s*=\s*data\.aws_caller_identity\.current\.account_id/u)
+  assert.match(main, /github_oidc_provider_account_id\s*=\s*split\(":"\s*,\s*var\.github_oidc_provider_arn\)\[4\]/u)
+  assert.match(main, /bucket_name\s*=\s*coalesce\(var\.bucket_name,\s*"artifact-pages-\$\{local\.aws_account_id\}-\$\{var\.aws_region\}"\)/u)
+  const guard = block(main, 'resource "terraform_data" "target_account_guard"')
+  assert.match(guard, /condition\s*=\s*local\.aws_account_id\s*==\s*local\.github_oidc_provider_account_id/u)
+  assert.match(guard, /must match the account ID in github_oidc_provider_arn/u)
+  const bucket = block(main, 'resource "aws_s3_bucket" "origin"')
+  assert.match(bucket, /depends_on\s*=\s*\[terraform_data\.target_account_guard\]/u)
+  assert.match(bucket, /bucket\s*=\s*local\.bucket_name/u)
+  assert.match(outputs, /accountId\s*=\s*local\.aws_account_id/u)
+  for (const declaration of main.matchAll(/^resource "[^"]+" "[^"]+" \{[\s\S]*?^\}/gmu)) {
+    if (declaration[0].startsWith('resource "terraform_data"')) continue
+    assert.match(declaration[0], /depends_on\s*=\s*\[[^\]]*terraform_data\.target_account_guard/u, `${declaration[0].split("\n", 1)[0]} must wait for the account guard`)
+  }
 })
 
 test('preview lifecycle is prefix-scoped and accounts for current, noncurrent, and incomplete objects', () => {
@@ -297,19 +317,24 @@ test('deployment output remains compatible with the CLI AWS target contract', ()
   const targetOutput = block(outputs, 'output "aws_deployment_config_yaml"')
   assert.match(targetOutput, /schemaVersion\s*=\s*1/u)
   assert.match(targetOutput, /provider\s*=\s*"aws"/u)
-  assert.match(targetOutput, /previewRetentionDays\s*=\s*var\.preview_retention_days/u)
+  assert.doesNotMatch(targetOutput, /previewRetentionDays/u)
+  assert.match(targetOutput, /accountId\s*=\s*local\.aws_account_id/u)
   assert.match(targetOutput, /region\s*=\s*var\.aws_region/u)
-  assert.match(targetOutput, /bucket\s*=\s*aws_s3_bucket\.origin\.id/u)
+  assert.match(targetOutput, /bucket\s*=\s*aws_s3_bucket\.origin\.bucket/u)
   assert.match(targetOutput, /distributionId\s*=\s*aws_cloudfront_distribution\.site\.id/u)
 })
 
 test('module and clean caller examples use distinct local and Registry sources', async () => {
   const local = await readFile(new URL('../examples/local-consumer/main.tf', import.meta.url), 'utf8')
+  const localVariables = await readFile(new URL('../examples/local-consumer/variables.tf', import.meta.url), 'utf8')
   const registry = await readFile(new URL('../examples/registry-consumer/main.tf', import.meta.url), 'utf8')
+  const registryVariables = await readFile(new URL('../examples/registry-consumer/variables.tf', import.meta.url), 'utf8')
   const registryReadme = await readFile(new URL('../examples/registry-consumer/README.md', import.meta.url), 'utf8')
   assert.match(local, /source\s*=\s*"\.\.\/\.\."/u)
+  assert.match(localVariables, /variable "bucket_name"[\s\S]*?default\s*=\s*null/u)
   assert.match(registry, /source\s*=\s*"tasuku43\/artifact-pages\/aws"/u)
   assert.match(registry, /version\s*=\s*"0\.1\.0"/u)
+  assert.match(registryVariables, /variable "bucket_name"[\s\S]*?default\s*=\s*null/u)
   assert.match(registryReadme, /has not been approved or published/u)
 })
 
@@ -317,6 +342,10 @@ test('optional Cloudflare composition leaves the root AWS module and caller-mana
   assert.match(versions, /source\s*=\s*"hashicorp\/aws"/u)
   assert.doesNotMatch(versions, /cloudflare\/cloudflare/u)
   assert.doesNotMatch(versions, /configuration_aliases/u)
+  const compositionVariables = await readFile(new URL('../modules/cloudflare-dns-acm/variables.tf', import.meta.url), 'utf8')
+  const compositionExampleVariables = await readFile(new URL('../examples/cloudflare-dns-acm-consumer/variables.tf', import.meta.url), 'utf8')
+  assert.match(compositionVariables, /variable "bucket_name"[\s\S]*?default\s*=\s*null/u)
+  assert.match(compositionExampleVariables, /variable "bucket_name"[\s\S]*?default\s*=\s*null/u)
   assert.match(variables, /variable "aliases"[\s\S]*?default\s*=\s*\[\]/u)
   assert.match(variables, /variable "acm_certificate_arn"[\s\S]*?default\s*=\s*null/u)
   assert.match(variables, /length\(var\.aliases\) == 0 \|\| var\.acm_certificate_arn != null/u)

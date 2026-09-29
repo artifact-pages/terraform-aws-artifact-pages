@@ -10,8 +10,9 @@ variable "aws_region" {
 }
 
 variable "bucket_name" {
-  description = "Globally unique name for the private static origin bucket."
+  description = "Optional S3 bucket name override. Defaults to artifact-pages-<AWS provider account ID>-<AWS region>."
   type        = string
+  default     = null
 }
 
 variable "preview_retention_days" {
@@ -25,7 +26,7 @@ variable "preview_retention_days" {
 }
 
 variable "github_oidc_provider_arn" {
-  description = "ARN of the existing GitHub Actions OIDC provider in this AWS account."
+  description = "ARN of the existing GitHub Actions OIDC provider; its account ID must match the AWS provider target account."
   type        = string
 }
 

@@ -2,7 +2,7 @@
 
 This child module composes the AWS deployment module with DNS-only Cloudflare records for one caller-selected custom hostname. It accepts any valid non-apex hostname beneath the supplied Cloudflare zone. The root AWS module only requires the AWS provider and continues to support the default CloudFront hostname or a caller-managed certificate and DNS configuration.
 
-The caller must configure the default AWS provider in `aws_region`, an `aws.us_east_1` alias, and the Cloudflare provider. The alias creates and validates the ACM viewer certificate in `us-east-1`, as [CloudFront requires](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/cnames-and-https-requirements.html). The module creates DNS validation records first and passes the validated certificate ARN and the same hostname to the AWS module's `aliases` and `acm_certificate_arn` inputs. This dependency makes certificate validation complete before the CloudFront distribution can use the alias.
+The caller must configure the default AWS provider in `aws_region`, an `aws.us_east_1` alias, and the Cloudflare provider. Both AWS provider configurations must target the account embedded in `github_oidc_provider_arn`; the module checks both identities during planning and stops on a mismatch before any resource can be applied. These are read-only AWS identity lookups. The alias creates and validates the ACM viewer certificate in `us-east-1`, as [CloudFront requires](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/cnames-and-https-requirements.html). The module creates DNS validation records first and passes the validated certificate ARN and the same hostname to the AWS module's `aliases` and `acm_certificate_arn` inputs. This dependency makes certificate validation complete before the CloudFront distribution can use the alias.
 
 The Cloudflare zone must already exist. `cloudflare_domain.hostname` must be a valid subdomain beneath `cloudflare_domain.zone_name`; the apex is rejected. The module creates only:
 
@@ -38,7 +38,7 @@ The ACM certificate uses `create_before_destroy`; a hostname change requests and
 
 ## Real-plan review checklist
 
-Before an approved plan for a configured hostname, verify the caller's AWS default provider points to the intended account and `aws_region`, while `aws.us_east_1` points to the same account in `us-east-1`. Confirm the Cloudflare token and `cloudflare_domain.zone_id` refer to the zone identified by `cloudflare_domain.zone_name`. Review the full plan and check that:
+Before an approved plan for a configured hostname, verify the caller's AWS default provider points to the intended account and `aws_region`, while `aws.us_east_1` points to the same account in `us-east-1`. Both accounts must match the account in `github_oidc_provider_arn`. Confirm the Cloudflare token and `cloudflare_domain.zone_id` refer to the zone identified by `cloudflare_domain.zone_name`. Review the full plan and check that:
 
 - The requested ACM certificate's domain is exactly the normalized `cloudflare_domain.hostname`, and the certificate validation waiter completes before the CloudFront distribution uses it.
 - The ACM validation records are CNAMEs in the selected Cloudflare zone with `proxied = false` and automatic TTL.
@@ -50,4 +50,4 @@ After a separately approved apply, wait for ACM `ISSUED` and CloudFront `Deploye
 
 ## Validation boundary
 
-The local example and validation script use placeholder values, skip AWS account checks in a temporary copy, and do not contact AWS or Cloudflare. They verify source wiring and produce an offline create-only plan; they do not prove DNS validation, certificate issuance, CloudFront deployment, or browser delivery. Those require a separately approved plan and a live disposable target.
+The local examples use placeholder values. Validation mocks AWS and Cloudflare providers, including both AWS identity lookups, and does not contact provider APIs or apply resources. It verifies source wiring and rejects mocked account mismatches; it does not prove DNS validation, certificate issuance, CloudFront deployment, or browser delivery. Those require a separately approved plan and a live disposable target.

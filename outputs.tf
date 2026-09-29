@@ -1,6 +1,6 @@
 output "bucket_name" {
   description = "Private S3 origin bucket name."
-  value       = aws_s3_bucket.origin.id
+  value       = aws_s3_bucket.origin.bucket
 }
 
 output "distribution_id" {
@@ -26,12 +26,12 @@ output "satellite_role_arns" {
 output "aws_deployment_config_yaml" {
   description = "Provider-neutral artifact-pages AWS target configuration."
   value = yamlencode({
-    schemaVersion        = 1
-    provider             = "aws"
-    previewRetentionDays = var.preview_retention_days
+    schemaVersion = 1
+    provider      = "aws"
     aws = {
+      accountId      = local.aws_account_id
       region         = var.aws_region
-      bucket         = aws_s3_bucket.origin.id
+      bucket         = aws_s3_bucket.origin.bucket
       distributionId = aws_cloudfront_distribution.site.id
     }
   })

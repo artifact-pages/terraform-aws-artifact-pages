@@ -15,8 +15,14 @@ variable "aws_region" {
 }
 
 variable "bucket_name" {
-  description = "Globally unique name for the private static origin bucket."
+  description = "Optional globally unique S3 bucket name override. Defaults to artifact-pages-<AWS provider account ID>-<AWS region>; availability is not guaranteed."
   type        = string
+  default     = null
+
+  validation {
+    condition     = var.bucket_name == null ? true : trimspace(var.bucket_name) != ""
+    error_message = "bucket_name must be omitted or contain a non-empty S3 bucket name."
+  }
 }
 
 variable "preview_retention_days" {
@@ -30,8 +36,13 @@ variable "preview_retention_days" {
 }
 
 variable "github_oidc_provider_arn" {
-  description = "ARN of the existing GitHub Actions OIDC provider in this AWS account."
+  description = "ARN of the existing GitHub Actions OIDC provider; its account ID must match the AWS provider target account."
   type        = string
+
+  validation {
+    condition     = can(regex("^arn:[^:]+:iam::[0-9]{12}:oidc-provider/.+$", var.github_oidc_provider_arn))
+    error_message = "github_oidc_provider_arn must be an IAM OIDC provider ARN with a 12-digit account ID."
+  }
 }
 
 variable "github_oidc_issuer_url" {

@@ -9,8 +9,9 @@ variable "aws_region" {
 }
 
 variable "bucket_name" {
-  description = "Globally unique private S3 origin bucket name."
+  description = "Optional S3 bucket name override; omit to use the module's deterministic AWS provider account-and-region default."
   type        = string
+  default     = null
 }
 
 variable "preview_retention_days" {
@@ -19,7 +20,7 @@ variable "preview_retention_days" {
 }
 
 variable "github_oidc_provider_arn" {
-  description = "ARN for an existing GitHub Actions OIDC provider."
+  description = "ARN for an existing GitHub Actions OIDC provider in the AWS provider target account."
   type        = string
 }
 

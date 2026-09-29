@@ -1,8 +1,36 @@
 locals {
-  hostname = lower(var.cloudflare_domain.hostname)
+  hostname                        = lower(var.cloudflare_domain.hostname)
+  github_oidc_provider_account_id = split(":", var.github_oidc_provider_arn)[4]
+}
+
+data "aws_caller_identity" "primary" {
+  provider = aws
+}
+
+data "aws_caller_identity" "us_east_1" {
+  provider = aws.us_east_1
+}
+
+resource "terraform_data" "target_account_guard" {
+  input = {
+    primary   = data.aws_caller_identity.primary.account_id
+    us_east_1 = data.aws_caller_identity.us_east_1.account_id
+  }
+
+  lifecycle {
+    precondition {
+      condition = (
+        data.aws_caller_identity.primary.account_id == local.github_oidc_provider_account_id &&
+        data.aws_caller_identity.us_east_1.account_id == local.github_oidc_provider_account_id
+      )
+      error_message = "Both AWS provider accounts must match the OIDC account."
+    }
+  }
 }
 
 resource "aws_acm_certificate" "viewer" {
+  depends_on = [terraform_data.target_account_guard]
+
   provider          = aws.us_east_1
   domain_name       = local.hostname
   validation_method = "DNS"
@@ -14,6 +42,8 @@ resource "aws_acm_certificate" "viewer" {
 }
 
 resource "cloudflare_dns_record" "acm_validation" {
+  depends_on = [terraform_data.target_account_guard]
+
   for_each = {
     for option in aws_acm_certificate.viewer.domain_validation_options :
     option.domain_name => option
@@ -28,6 +58,8 @@ resource "cloudflare_dns_record" "acm_validation" {
 }
 
 resource "aws_acm_certificate_validation" "viewer" {
+  depends_on = [terraform_data.target_account_guard]
+
   provider                = aws.us_east_1
   certificate_arn         = aws_acm_certificate.viewer.arn
   validation_record_fqdns = [for record in cloudflare_dns_record.acm_validation : record.name]
@@ -35,6 +67,8 @@ resource "aws_acm_certificate_validation" "viewer" {
 
 module "artifact_pages" {
   source = "../.."
+
+  depends_on = [terraform_data.target_account_guard]
 
   providers = {
     aws = aws
@@ -56,6 +90,8 @@ module "artifact_pages" {
 }
 
 resource "cloudflare_dns_record" "distribution" {
+  depends_on = [terraform_data.target_account_guard]
+
   zone_id = var.cloudflare_domain.zone_id
   name    = local.hostname
   type    = "CNAME"
