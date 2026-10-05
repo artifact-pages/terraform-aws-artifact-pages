@@ -45,3 +45,33 @@ variable "aws_hostname" {
   type        = string
   default     = "aws.example.com"
 }
+
+variable "viewer_protocol_policy" {
+  description = "CloudFront viewer transport policy on every behavior: redirect HTTP (default), or reject HTTP with https-only. Independent of WAF."
+  type        = string
+  default     = "redirect-to-https"
+  nullable    = false
+  validation {
+    condition     = contains(["redirect-to-https", "https-only"], var.viewer_protocol_policy)
+    error_message = "viewer_protocol_policy must be redirect-to-https or https-only."
+  }
+}
+
+variable "waf_custom_rules" {
+  description = "Optional module-owned global WAF policy: ip_allowlist preset and validated AWS-native rule blocks. Mutually exclusive with web_acl_arn. See docs/waf.md for the supported subset and retirement procedure."
+  type = object({
+    default_action = optional(any, { allow = {} })
+    presets        = optional(any, {})
+    rules          = optional(any, [])
+    custom_response_bodies = optional(map(object({
+      content      = string
+      content_type = string
+    })), {})
+    visibility_config = optional(object({
+      cloudwatch_metrics_enabled = optional(bool, true)
+      sampled_requests_enabled   = optional(bool, false)
+      metric_name                = optional(string)
+    }), {})
+  })
+  default = null
+}

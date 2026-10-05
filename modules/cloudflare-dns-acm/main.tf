@@ -85,6 +85,8 @@ module "artifact_pages" {
   aliases                   = [local.hostname]
   acm_certificate_arn       = aws_acm_certificate_validation.viewer.certificate_arn
   web_acl_arn               = var.web_acl_arn
+  waf_custom_rules          = var.waf_custom_rules
+  viewer_protocol_policy    = var.viewer_protocol_policy
   price_class               = var.price_class
   tags                      = var.tags
 }

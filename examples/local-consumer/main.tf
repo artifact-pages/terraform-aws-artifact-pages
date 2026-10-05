@@ -1,6 +1,9 @@
 module "artifact_pages" {
   source = "../.."
 
+  waf_custom_rules       = var.waf_custom_rules
+  viewer_protocol_policy = var.viewer_protocol_policy
+
   name_prefix               = var.name_prefix
   aws_region                = var.aws_region
   bucket_name               = var.bucket_name

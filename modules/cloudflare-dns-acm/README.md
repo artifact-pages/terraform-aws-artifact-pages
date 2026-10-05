@@ -13,7 +13,9 @@ It does not create Route 53 resources, change unrelated DNS names, manage the zo
 
 ## Inputs and outputs
 
-The deployment inputs mirror the [root AWS module](../../README.md#inputs), with `cloudflare_domain` added:
+The deployment inputs mirror the [root AWS module](../../README.md#inputs), including `waf_custom_rules`, `web_acl_arn` and the independent `viewer_protocol_policy`, with `cloudflare_domain` added. WAF enforcement is on CloudFront; see the [AWS policy contract](../../docs/waf.md).
+
+Additional domain inputs:
 
 | Name | Required | Description |
 | --- | --- | --- |

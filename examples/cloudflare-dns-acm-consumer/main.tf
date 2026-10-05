@@ -1,6 +1,9 @@
 module "artifact_pages" {
   source = "../../modules/cloudflare-dns-acm"
 
+  waf_custom_rules       = var.waf_custom_rules
+  viewer_protocol_policy = var.viewer_protocol_policy
+
   providers = {
     aws           = aws
     aws.us_east_1 = aws.us_east_1

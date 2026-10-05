@@ -378,14 +378,14 @@ resource "aws_cloudfront_cache_policy" "immutable_assets" {
 }
 
 resource "aws_cloudfront_distribution" "site" {
-  depends_on = [terraform_data.target_account_guard]
+  depends_on = [terraform_data.target_account_guard, terraform_data.waf_guard, aws_wafv2_web_acl.viewer]
 
   enabled         = true
   is_ipv6_enabled = true
   comment         = "${var.name_prefix} static application and content planes"
   aliases         = var.aliases
   price_class     = var.price_class
-  web_acl_id      = var.web_acl_arn
+  web_acl_id      = local.effective_web_acl_arn
 
   origin {
     domain_name              = aws_s3_bucket.origin.bucket_regional_domain_name
@@ -401,7 +401,7 @@ resource "aws_cloudfront_distribution" "site" {
 
   default_cache_behavior {
     target_origin_id       = local.origin_id
-    viewer_protocol_policy = "redirect-to-https"
+    viewer_protocol_policy = var.viewer_protocol_policy
     allowed_methods        = ["GET", "HEAD"]
     cached_methods         = ["GET", "HEAD"]
     cache_policy_id        = aws_cloudfront_cache_policy.no_store.id
@@ -419,7 +419,7 @@ resource "aws_cloudfront_distribution" "site" {
     content {
       path_pattern           = ordered_cache_behavior.value.path_pattern
       target_origin_id       = local.origin_id
-      viewer_protocol_policy = "redirect-to-https"
+      viewer_protocol_policy = var.viewer_protocol_policy
       allowed_methods        = ordered_cache_behavior.value.allowed_methods
       cached_methods         = ordered_cache_behavior.value.cached_methods
       cache_policy_id        = ordered_cache_behavior.value.cache_policy_id

@@ -20,7 +20,9 @@ Create the GitHub OIDC provider in the AWS account first. The AWS provider confi
 | `github_oidc_issuer_url` | No | `https://token.actions.githubusercontent.com` | Issuer URL for the existing OIDC provider. |
 | `aliases` | No | `[]` | Optional CloudFront alternate domain names. DNS is managed by the caller. |
 | `acm_certificate_arn` | No | `null` | ACM certificate ARN in `us-east-1`, required when aliases are set. |
-| `web_acl_arn` | No | `null` | Optional customer-managed WAFv2 web ACL ARN. |
+| `web_acl_arn` | No | `null` | Caller-owned global/us-east-1, same-account WAFv2 ACL; exclusive with `waf_custom_rules`. |
+| `waf_custom_rules` | No | `null` | Module-owned AWS-native rules and IP allowlist preset; see [viewer policy](docs/waf.md). |
+| `viewer_protocol_policy` | No | `redirect-to-https` | Redirect HTTP, or reject it with `https-only`, on every behavior; independent of WAF. |
 | `price_class` | No | `PriceClass_100` | CloudFront edge location class. |
 | `tags` | No | `{}` | Tags applied to supported resources. |
 
@@ -37,7 +39,7 @@ Create the GitHub OIDC provider in the AWS account first. The AWS provider confi
 
 When `bucket_name` is omitted, the deterministic default uses the 12-digit account ID returned by `aws_caller_identity` for the configured AWS provider and `aws_region`. The module checks during planning that this account matches the account ID embedded in `github_oidc_provider_arn`, and stops on a mismatch before resources can be applied. This is a read-only AWS identity lookup; bucket-name availability is not guaranteed.
 
-The module does not create DNS records or a WAF policy. A satellite role only exists for a key in `satellite_github_subjects`; registry edits do not change these permissions. Update the module inputs separately when repository identity or the intended site boundary changes.
+The module does not create DNS records. It creates a WAF policy only when `waf_custom_rules` is supplied; see [rule subset, ownership and retirement](docs/waf.md). A satellite role only exists for a key in `satellite_github_subjects`; registry edits do not change these permissions. Update the module inputs separately when repository identity or the intended site boundary changes.
 
 ## Optional Cloudflare DNS and ACM composition
 
