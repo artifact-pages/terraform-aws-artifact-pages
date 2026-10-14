@@ -18,35 +18,30 @@ locals {
     indexes = {
       path_pattern    = "/_indexes/*"
       cache_policy_id = aws_cloudfront_cache_policy.indexes.id
-      trusted_html    = false
       allowed_methods = ["GET", "HEAD"]
       cached_methods  = ["GET", "HEAD"]
     }
     artifacts = {
       path_pattern    = "/_artifacts/*"
       cache_policy_id = aws_cloudfront_cache_policy.artifacts.id
-      trusted_html    = true
       allowed_methods = ["GET", "HEAD"]
       cached_methods  = ["GET", "HEAD"]
     }
     previews = {
       path_pattern    = "/_previews/*"
       cache_policy_id = aws_cloudfront_cache_policy.no_store.id
-      trusted_html    = true
       allowed_methods = ["GET", "HEAD"]
       cached_methods  = ["GET", "HEAD"]
     }
     assets = {
       path_pattern    = "/assets/*"
       cache_policy_id = aws_cloudfront_cache_policy.immutable_assets.id
-      trusted_html    = false
       allowed_methods = ["GET", "HEAD"]
       cached_methods  = ["GET", "HEAD"]
     }
     errors = {
       path_pattern    = "/_errors/*"
       cache_policy_id = aws_cloudfront_cache_policy.no_store.id
-      trusted_html    = false
       allowed_methods = ["GET", "HEAD"]
       cached_methods  = ["GET", "HEAD"]
     }
@@ -69,8 +64,7 @@ locals {
             "_artifacts/*",
             "_indexes/*",
             "_previews/*",
-            "_control/locks/*",
-            "_control/registry-cleanup.json",
+            "_control/*",
           ]
         }
       }
@@ -81,8 +75,7 @@ locals {
       Action = ["s3:GetObject"]
       Resource = [
         "${local.bucket_arn}/_indexes/sites.json",
-        "${local.bucket_arn}/_control/locks/*",
-        "${local.bucket_arn}/_control/registry-cleanup.json",
+        "${local.bucket_arn}/_control/*",
         "${local.bucket_arn}/index.html",
         "${local.bucket_arn}/preview-bridge.js",
         "${local.bucket_arn}/LICENSE",
@@ -101,8 +94,7 @@ locals {
         "${local.bucket_arn}/THIRD_PARTY_NOTICES.txt",
         "${local.bucket_arn}/assets/*",
         "${local.bucket_arn}/_indexes/sites.json",
-        "${local.bucket_arn}/_control/locks/*",
-        "${local.bucket_arn}/_control/registry-cleanup.json",
+        "${local.bucket_arn}/_control/*",
       ]
     },
     {
@@ -113,7 +105,12 @@ locals {
         "${local.bucket_arn}/_artifacts/*",
         "${local.bucket_arn}/_indexes/*/*",
         "${local.bucket_arn}/_previews/*",
-        "${local.bucket_arn}/_control/registry-cleanup.json",
+        "${local.bucket_arn}/_control/*",
+        "${local.bucket_arn}/index.html",
+        "${local.bucket_arn}/preview-bridge.js",
+        "${local.bucket_arn}/LICENSE",
+        "${local.bucket_arn}/THIRD_PARTY_NOTICES.txt",
+        "${local.bucket_arn}/assets/*",
       ]
     },
     {
@@ -267,14 +264,26 @@ resource "aws_cloudfront_function" "routes" {
   code    = file("${path.module}/routes.js")
 }
 
-resource "aws_cloudfront_function" "trusted_html_policy" {
+resource "aws_cloudfront_response_headers_policy" "artifact_csp" {
   depends_on = [terraform_data.target_account_guard]
 
-  name    = "${var.name_prefix}-trusted-html-policy"
-  runtime = "cloudfront-js-2.0"
-  comment = "Set production-equivalent path-scoped CSP for raw artifacts and previews."
-  publish = true
-  code    = file("${path.module}/trusted-html-policy.js")
+  name    = "${var.name_prefix}-artifact-csp"
+  comment = "Enforce the trusted-HTML resource policy on artifact, raw preview and error responses."
+
+  security_headers_config {
+    content_security_policy {
+      content_security_policy = join("; ", [
+        "default-src https: data: blob:",
+        "script-src https: 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' data: blob:",
+        "style-src https: 'unsafe-inline' data: blob:",
+      ])
+      override = true
+    }
+
+    content_type_options {
+      override = true
+    }
+  }
 }
 
 resource "aws_cloudfront_cache_policy" "no_store" {
@@ -287,8 +296,8 @@ resource "aws_cloudfront_cache_policy" "no_store" {
   max_ttl     = 0
 
   parameters_in_cache_key_and_forwarded_to_origin {
-    enable_accept_encoding_gzip   = true
-    enable_accept_encoding_brotli = true
+    enable_accept_encoding_gzip   = false
+    enable_accept_encoding_brotli = false
 
     cookies_config {
       cookie_behavior = "none"
@@ -391,10 +400,6 @@ resource "aws_cloudfront_distribution" "site" {
     domain_name              = aws_s3_bucket.origin.bucket_regional_domain_name
     origin_id                = local.origin_id
     origin_access_control_id = aws_cloudfront_origin_access_control.origin.id
-
-    s3_origin_config {
-      origin_access_identity = ""
-    }
   }
 
   default_root_object = "index.html"
@@ -417,27 +422,20 @@ resource "aws_cloudfront_distribution" "site" {
     for_each = local.cache_behaviors
 
     content {
-      path_pattern           = ordered_cache_behavior.value.path_pattern
-      target_origin_id       = local.origin_id
-      viewer_protocol_policy = var.viewer_protocol_policy
-      allowed_methods        = ordered_cache_behavior.value.allowed_methods
-      cached_methods         = ordered_cache_behavior.value.cached_methods
-      cache_policy_id        = ordered_cache_behavior.value.cache_policy_id
-      compress               = true
+      path_pattern               = ordered_cache_behavior.value.path_pattern
+      target_origin_id           = local.origin_id
+      viewer_protocol_policy     = var.viewer_protocol_policy
+      allowed_methods            = ordered_cache_behavior.value.allowed_methods
+      cached_methods             = ordered_cache_behavior.value.cached_methods
+      cache_policy_id            = ordered_cache_behavior.value.cache_policy_id
+      compress                   = true
+      response_headers_policy_id = contains(["artifacts", "errors", "previews"], ordered_cache_behavior.key) ? aws_cloudfront_response_headers_policy.artifact_csp.id : null
 
       function_association {
         event_type   = "viewer-request"
         function_arn = aws_cloudfront_function.routes.arn
       }
 
-      dynamic "function_association" {
-        for_each = ordered_cache_behavior.value.trusted_html ? [true] : []
-
-        content {
-          event_type   = "viewer-response"
-          function_arn = aws_cloudfront_function.trusted_html_policy.arn
-        }
-      }
     }
   }
 
@@ -599,10 +597,12 @@ resource "aws_iam_role_policy" "satellite" {
         Action = ["s3:GetObject"]
         Resource = [
           "${local.bucket_arn}/_indexes/sites.json",
+          # IMP-69: shared deployed-web compatibility is read-only for satellites.
+          "${local.bucket_arn}/_control/versions/app.json",
           "${local.bucket_arn}/_indexes/${each.key}/*",
           "${local.bucket_arn}/_artifacts/${each.key}/*",
           "${local.bucket_arn}/_previews/${each.key}/*",
-          "${local.bucket_arn}/_control/locks/sites/${each.key}.json",
+          "${local.bucket_arn}/_control/sites/${each.key}/*",
         ]
       },
       {
@@ -616,7 +616,7 @@ resource "aws_iam_role_policy" "satellite" {
               "_indexes/${each.key}/*",
               "_artifacts/${each.key}/*",
               "_previews/${each.key}/*",
-              "_control/locks/sites/${each.key}.json",
+              "_control/sites/${each.key}/*",
             ]
           }
         }
@@ -629,7 +629,7 @@ resource "aws_iam_role_policy" "satellite" {
           "${local.bucket_arn}/_indexes/${each.key}/*",
           "${local.bucket_arn}/_artifacts/${each.key}/*",
           "${local.bucket_arn}/_previews/${each.key}/*",
-          "${local.bucket_arn}/_control/locks/sites/${each.key}.json",
+          "${local.bucket_arn}/_control/sites/${each.key}/*",
         ]
       },
       {
@@ -638,7 +638,16 @@ resource "aws_iam_role_policy" "satellite" {
         Action = ["s3:DeleteObject"]
         Resource = [
           "${local.bucket_arn}/_artifacts/${each.key}/*",
+          "${local.bucket_arn}/_indexes/${each.key}/*",
+          "${local.bucket_arn}/_control/sites/${each.key}/*",
+          "${local.bucket_arn}/_previews/${each.key}/*",
         ]
+      },
+      {
+        Sid      = "RevalidateSelectedSiteDistribution"
+        Effect   = "Allow"
+        Action   = ["cloudfront:CreateInvalidation"]
+        Resource = aws_cloudfront_distribution.site.arn
       },
     ]
   })

@@ -1,13 +1,20 @@
+//go:build ignore
+
+// Excluded from the monorepo build: scripts/validate.sh copies this helper (without the
+// build constraint) into the CLI tree so that it may import the CLI-internal config package.
+
 package main
 
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"reflect"
+	"strings"
 
-	"github.com/tasuku43/git-artifact-pages/internal/config"
-	"go.yaml.in/yaml/v4"
+	"github.com/artifact-pages/artifact-pages/cli/internal/config"
+	"go.yaml.in/yaml/v3"
 )
 
 type request struct {
@@ -17,6 +24,7 @@ type request struct {
 	ExpectedAccount        string `json:"expected_account_id"`
 	ExpectedRegion         string `json:"expected_region"`
 	ExpectedDistributionID string `json:"expected_distribution_id"`
+	ExpectedNamePrefix     string `json:"expected_name_prefix"`
 }
 
 func main() {
@@ -51,6 +59,9 @@ func main() {
 	if target.DistributionID != input.ExpectedDistributionID {
 		fail("parsed distributionId = %q, want mocked distribution ID %q", target.DistributionID, input.ExpectedDistributionID)
 	}
+	if target.NamePrefix != input.ExpectedNamePrefix {
+		fail("parsed namePrefix = %q, want %q", target.NamePrefix, input.ExpectedNamePrefix)
+	}
 	root := yamlRoot(input.YAML)
 	aws := mappingValue(root, "aws")
 	for field, expected := range map[string]string{
@@ -63,6 +74,14 @@ func main() {
 			fail("raw Terraform YAML field aws.%s = %q, want %q", field, actual, expected)
 		}
 	}
+	namePrefix := mappingValue(aws, "namePrefix")
+	if input.ExpectedNamePrefix == "" {
+		if namePrefix != nil {
+			fail("default namePrefix must be omitted from the Terraform CLI YAML")
+		}
+	} else if actual := stringValue(namePrefix); actual != input.ExpectedNamePrefix {
+		fail("raw Terraform YAML field aws.namePrefix = %q, want %q", actual, input.ExpectedNamePrefix)
+	}
 	if mappingValue(root, "previewRetentionDays") != nil {
 		fail("generated CLI YAML must not include previewRetentionDays")
 	}
@@ -72,9 +91,10 @@ func main() {
 		}
 	}
 	_ = json.NewEncoder(os.Stdout).Encode(map[string]string{
-		"provider":  parsed.Provider,
-		"bucket":    target.Bucket,
-		"accountId": accountID,
+		"provider":   parsed.Provider,
+		"bucket":     target.Bucket,
+		"accountId":  accountID,
+		"namePrefix": target.NamePrefix,
 	})
 }
 
@@ -98,15 +118,20 @@ func stringField(value reflect.Value, name string) string {
 }
 
 func yamlRoot(contents string) *yaml.Node {
-	var documents []yaml.Node
-	if err := yaml.Load([]byte(contents), &documents, yaml.WithAllDocuments()); err != nil || len(documents) != 1 {
+	decoder := yaml.NewDecoder(strings.NewReader(contents))
+	var root yaml.Node
+	if err := decoder.Decode(&root); err != nil {
 		fail("decode raw Terraform YAML for contract assertions: %v", err)
 	}
-	root := &documents[0]
-	if root.Kind == yaml.DocumentNode && len(root.Content) == 1 {
-		root = root.Content[0]
+	var extra yaml.Node
+	if err := decoder.Decode(&extra); err != io.EOF {
+		fail("raw Terraform YAML must contain exactly one document")
 	}
-	return root
+	node := &root
+	if node.Kind == yaml.DocumentNode && len(node.Content) == 1 {
+		node = node.Content[0]
+	}
+	return node
 }
 
 func mappingValue(mapping *yaml.Node, name string) *yaml.Node {

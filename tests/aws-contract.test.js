@@ -1,15 +1,10 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import { runInNewContext } from 'node:vm'
 import test from 'node:test'
 const main = await readFile(new URL('../main.tf', import.meta.url), 'utf8')
 const variables = await readFile(new URL('../variables.tf', import.meta.url), 'utf8')
 const outputs = await readFile(new URL('../outputs.tf', import.meta.url), 'utf8')
 const versions = await readFile(new URL('../versions.tf', import.meta.url), 'utf8')
-const cloudflareComposition = await readFile(new URL('../modules/cloudflare-dns-acm/main.tf', import.meta.url), 'utf8')
-const cloudflareVariables = await readFile(new URL('../modules/cloudflare-dns-acm/variables.tf', import.meta.url), 'utf8')
-const cloudflareOutputs = await readFile(new URL('../modules/cloudflare-dns-acm/outputs.tf', import.meta.url), 'utf8')
-const cloudflareVersions = await readFile(new URL('../modules/cloudflare-dns-acm/versions.tf', import.meta.url), 'utf8')
 
 function block(source, header) {
   const start = source.indexOf(header)
@@ -104,6 +99,13 @@ test('AWS deployment keeps the S3 origin private behind signed CloudFront OAC', 
   assert.doesNotMatch(bucketPolicy, /Principal\s*=\s*"\*"/u)
 })
 
+test('site origin uses OAC without an s3_origin_config block (plan converges)', () => {
+  const distribution = block(main, 'resource "aws_cloudfront_distribution" "site"')
+  const origin = block(distribution, 'origin {')
+  assert.match(origin, /origin_access_control_id\s*=\s*aws_cloudfront_origin_access_control\.origin\.id/u)
+  assert.doesNotMatch(origin, /s3_origin_config/u)
+})
+
 test('AWS deployment maps the logical app and content paths to bounded cache policies', async () => {
   const behaviors = block(main, '  cache_behaviors = {')
   for (const [name, path, policy] of [
@@ -136,39 +138,31 @@ test('AWS deployment maps the logical app and content paths to bounded cache pol
   assert.match(routeFunction, /request\.uri = "\/index\.html"/u)
 })
 
-test('trusted production and preview HTML receive path-scoped HTTPS CSP without CORS', async () => {
-  for (const [name, path] of [['artifacts', '/_artifacts/*'], ['previews', '/_previews/*']]) {
-    const behavior = block(main, `    ${name} = {`)
-    assert.match(behavior, new RegExp(`path_pattern\\s*=\\s*"${escapeRegExp(path)}"`, 'u'))
-    assert.match(behavior, /trusted_html\s*=\s*true/u)
+test('AWS no-store cache policy disables compression while cacheable policies retain it', () => {
+  const noStore = block(main, 'resource "aws_cloudfront_cache_policy" "no_store"')
+  for (const field of ['min_ttl', 'default_ttl', 'max_ttl']) {
+    assert.match(noStore, new RegExp(`${field}\\s*=\\s*0(?:\\s|$)`, 'u'), `${field} must remain zero`)
   }
-  assert.match(main, /event_type\s*=\s*"viewer-response"[\s\S]*?aws_cloudfront_function\.trusted_html_policy\.arn/u)
-  assert.doesNotMatch(main, /Access-Control-Allow-Origin|cors_config/u)
-
-  const source = await readFile(new URL('../trusted-html-policy.js', import.meta.url), 'utf8')
-  const sandbox = {}
-  runInNewContext(`${source}\nthis.handler = handler`, sandbox)
-  const invoke = (uri) => {
-    const response = { headers: {} }
-    const result = sandbox.handler({
-      request: { uri, headers: { host: { value: 'artifacts.example.com' } } },
-      response,
-    })
-    return result.headers
+  for (const field of ['enable_accept_encoding_gzip', 'enable_accept_encoding_brotli']) {
+    assert.match(noStore, new RegExp(`${field}\\s*=\\s*false(?:\\s|$)`, 'u'), `${field} must be disabled when caching is disabled`)
   }
 
-  const artifactHeaders = invoke('/_artifacts/sre/guide/index.html')
-  assert.match(artifactHeaders['content-security-policy'].value, /https:\/\/artifacts\.example\.com\/_artifacts\/sre\//u)
-  assert.match(artifactHeaders['content-security-policy'].value, /https: 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'/u)
-  assert.doesNotMatch(artifactHeaders['content-security-policy'].value, /(?:^|[\s;])http:/u)
-  assert.equal(artifactHeaders['x-content-type-options'].value, 'nosniff')
+  for (const name of ['indexes', 'artifacts', 'immutable_assets']) {
+    const cachePolicy = block(main, `resource "aws_cloudfront_cache_policy" "${name}"`)
+    for (const field of ['enable_accept_encoding_gzip', 'enable_accept_encoding_brotli']) {
+      assert.match(cachePolicy, new RegExp(`${field}\\s*=\\s*true(?:\\s|$)`, 'u'), `${name}.${field} must remain enabled`)
+    }
+  }
+})
 
-  const previewHeaders = invoke('/_previews/sre/0123456789abcdef/files/docs/guide.html')
-  assert.match(previewHeaders['content-security-policy'].value, /https:\/\/artifacts\.example\.com\/_previews\/sre\/0123456789abcdef\/files\//u)
-  assert.match(previewHeaders['content-security-policy'].value, /https: 'unsafe-inline' 'unsafe-eval'/u)
-  assert.doesNotMatch(previewHeaders['content-security-policy'].value, /(?:^|[\s;])http:/u)
-
-  assert.deepEqual(invoke('/_indexes/sites.json'), {})
+test('trusted production and preview HTML receive the enforced HTTPS CSP without CORS', () => {
+  const policy = block(main, 'resource "aws_cloudfront_response_headers_policy" "artifact_csp"')
+  assert.match(policy, /content_security_policy\s*=\s*join\("; ",/u)
+  assert.match(policy, /default-src https: data: blob:/u)
+  assert.match(policy, /content_type_options\s*\{\s*override\s*=\s*true/u)
+  assert.doesNotMatch(policy, /\bhttp:/iu)
+  assert.match(main, /response_headers_policy_id\s*=\s*contains\(\["artifacts",\s*"errors",\s*"previews"\],\s*ordered_cache_behavior\.key\)\s*\?\s*aws_cloudfront_response_headers_policy\.artifact_csp\.id\s*:\s*null/u)
+  assert.doesNotMatch(main, /aws_cloudfront_function" "trusted_html_policy|Access-Control-Allow-Origin|cors_config/u)
 })
 
 test('provider configuration stays in callers so the module remains composable', async () => {
@@ -265,19 +259,22 @@ test('admin and satellite OIDC roles have separate exact-subject trust and scope
   assert.match(adminStatements, /"s3:PutObject"/u)
   assert.match(adminStatements, /"s3:DeleteObject"/u)
   assert.match(adminStatements, /"cloudfront:CreateInvalidation"/u)
-  assert.match(adminStatements, /"_control\/locks\/\*"/u)
-  assert.match(adminStatements, /"_control\/registry-cleanup\.json"/u)
+  assert.match(adminStatements, /"_control\/\*"/u)
+  assert.doesNotMatch(adminStatements, /_control\/(?:locks|site-cache|publish-state|preview-cleanup|registry-cleanup|app-cache)/u, 'admin control access is prefix-level (IMP-66)')
   assert.doesNotMatch(adminStatements, /Action\s*=\s*"\*"/u)
   assert.doesNotMatch(adminStatements, /"s3:\*"/u)
 
   const satellitePolicy = block(main, 'resource "aws_iam_role_policy" "satellite"')
   assert.deepEqual(actionLists(satellitePolicy), [
-    ['s3:GetObject'], ['s3:ListBucket'], ['s3:PutObject'], ['s3:DeleteObject'],
+    ['s3:GetObject'], ['s3:ListBucket'], ['s3:PutObject'], ['s3:DeleteObject'], ['cloudfront:CreateInvalidation'],
   ])
   assert.match(satellitePolicy, /"_indexes\/\$\{each\.key\}\/\*"/u)
   assert.match(satellitePolicy, /"_artifacts\/\$\{each\.key\}\/\*"/u)
   assert.match(satellitePolicy, /"_previews\/\$\{each\.key\}\/\*"/u)
-  assert.match(satellitePolicy, /"_control\/locks\/sites\/\$\{each\.key\}\.json"/u)
+  assert.match(satellitePolicy, /"_control\/sites\/\$\{each\.key\}\/\*"/u, 'satellite list scope is its own control prefix')
+  assert.match(satellitePolicy, /"\$\{local\.bucket_arn\}\/_control\/sites\/\$\{each\.key\}\/\*"/u)
+  assert.doesNotMatch(satellitePolicy, /_control\/(?:\*|sites\/\*)/u, 'a satellite never gets another site or the whole control prefix')
+  assert.doesNotMatch(satellitePolicy, /_control\/(?:locks\/sites|site-cache|publish-state|preview-cleanup)\//u, 'IMP-66 step 3: no pre-prefix per-site control key')
   assert.match(satellitePolicy, /"\$\{local\.bucket_arn\}\/_indexes\/sites\.json"/u)
   assert.doesNotMatch(satellitePolicy, /\/index\.html|\/assets\/\*/u)
   assert.doesNotMatch(satellitePolicy, /"s3:\*"/u)
@@ -290,7 +287,9 @@ test('admin and satellite OIDC roles have separate exact-subject trust and scope
   const satelliteDelete = satellitePolicy.slice(satelliteDeleteStart)
   assert.match(satelliteDelete, /"s3:DeleteObject"/u)
   assert.match(satelliteDelete, /_artifacts\/\$\{each\.key\}\/\*/u)
-  assert.doesNotMatch(satelliteDelete, /_indexes|_previews|_control/u)
+  // Selected-site scopes only (index and preview deletion, exact control records); never the registry or locks.
+  assert.doesNotMatch(satelliteDelete, /sites\.json|_control\/locks|registry-cleanup|app-cache/u)
+  assert.doesNotMatch(satelliteDelete, /_(?:indexes|previews)\/\*|_control\/(?:site-cache|publish-state|preview-cleanup)\/\*/u)
   assert.match(variables, /satellite_github_subjects"[\s\S]*?type\s*=\s*map\(list\(string\)\)/u)
   assert.match(outputs, /satellite_role_arns/u)
 })
@@ -332,98 +331,24 @@ test('module and clean caller examples use distinct local and Registry sources',
   const registryReadme = await readFile(new URL('../examples/registry-consumer/README.md', import.meta.url), 'utf8')
   assert.match(local, /source\s*=\s*"\.\.\/\.\."/u)
   assert.match(localVariables, /variable "bucket_name"[\s\S]*?default\s*=\s*null/u)
-  assert.match(registry, /source\s*=\s*"tasuku43\/artifact-pages\/aws"/u)
+  assert.match(registry, /source\s*=\s*"artifact-pages\/artifact-pages\/aws"/u)
   assert.match(registry, /version\s*=\s*"0\.1\.0"/u)
   assert.match(registryVariables, /variable "bucket_name"[\s\S]*?default\s*=\s*null/u)
-  assert.match(registryReadme, /has not been approved or published/u)
+  assert.match(registryReadme, /publication is a separate owner-controlled step/u)
 })
 
-test('optional Cloudflare composition leaves the root AWS module and caller-managed path independent', async () => {
+test('AWS aliases and certificates remain caller-managed', async () => {
   assert.match(versions, /source\s*=\s*"hashicorp\/aws"/u)
   assert.doesNotMatch(versions, /cloudflare\/cloudflare/u)
   assert.doesNotMatch(versions, /configuration_aliases/u)
-  const compositionVariables = await readFile(new URL('../modules/cloudflare-dns-acm/variables.tf', import.meta.url), 'utf8')
-  const compositionExampleVariables = await readFile(new URL('../examples/cloudflare-dns-acm-consumer/variables.tf', import.meta.url), 'utf8')
-  assert.match(compositionVariables, /variable "bucket_name"[\s\S]*?default\s*=\s*null/u)
-  assert.match(compositionExampleVariables, /variable "bucket_name"[\s\S]*?default\s*=\s*null/u)
+
   assert.match(variables, /variable "aliases"[\s\S]*?default\s*=\s*\[\]/u)
   assert.match(variables, /variable "acm_certificate_arn"[\s\S]*?default\s*=\s*null/u)
   assert.match(variables, /length\(var\.aliases\) == 0 \|\| var\.acm_certificate_arn != null/u)
+  assert.match(main, /aliases\s*=\s*var\.aliases/u)
+  assert.match(main, /viewer_certificate[\s\S]*?acm_certificate_arn\s*=\s*length\(var\.aliases\)\s*>\s*0\s*\?\s*var\.acm_certificate_arn/u)
 
   const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8')
   assert.match(readme, /root AWS module remains AWS-only/u)
   assert.match(readme, /manage DNS and the `us-east-1` certificate in your own Terraform configuration/u)
-  assert.match(readme, /does not create a Route 53 zone or records/u)
-})
-
-test('optional composition validates an ACM certificate in us-east-1 before wiring its alias into CloudFront', () => {
-  assert.match(cloudflareVersions, /configuration_aliases\s*=\s*\[aws\.us_east_1\]/u)
-  assert.match(cloudflareVersions, /source\s*=\s*"cloudflare\/cloudflare"/u)
-
-  const certificate = block(cloudflareComposition, 'resource "aws_acm_certificate" "viewer"')
-  assert.match(certificate, /provider\s*=\s*aws\.us_east_1/u)
-  assert.match(certificate, /domain_name\s*=\s*local\.hostname/u)
-  assert.match(certificate, /validation_method\s*=\s*"DNS"/u)
-  assert.match(certificate, /create_before_destroy\s*=\s*true/u)
-
-  const validation = block(cloudflareComposition, 'resource "aws_acm_certificate_validation" "viewer"')
-  assert.match(validation, /provider\s*=\s*aws\.us_east_1/u)
-  assert.match(validation, /certificate_arn\s*=\s*aws_acm_certificate\.viewer\.arn/u)
-  assert.match(validation, /validation_record_fqdns\s*=\s*\[for record in cloudflare_dns_record\.acm_validation : record\.name\]/u)
-
-  const awsModule = block(cloudflareComposition, 'module "artifact_pages"')
-  assert.match(awsModule, /aws\s*=\s*aws/u)
-  assert.match(awsModule, /aliases\s*=\s*\[local\.hostname\]/u)
-  assert.match(awsModule, /acm_certificate_arn\s*=\s*aws_acm_certificate_validation\.viewer\.certificate_arn/u)
-  assert.doesNotMatch(cloudflareComposition, /provider\s+"(?:aws|cloudflare)"/u)
-})
-
-test('Cloudflare records are DNS-only, scoped to the supplied zone, and never create Route 53 resources', () => {
-  const validationRecord = block(cloudflareComposition, 'resource "cloudflare_dns_record" "acm_validation"')
-  assert.match(validationRecord, /for_each\s*=\s*\{[\s\S]*?domain_validation_options/u)
-  assert.match(validationRecord, /zone_id\s*=\s*var\.cloudflare_domain\.zone_id/u)
-  assert.match(validationRecord, /type\s*=\s*each\.value\.resource_record_type/u)
-  assert.match(validationRecord, /content\s*=\s*trimsuffix\(each\.value\.resource_record_value, "\."\)/u)
-  assert.match(validationRecord, /ttl\s*=\s*1/u)
-  assert.match(validationRecord, /proxied\s*=\s*false/u)
-
-  const distributionRecord = block(cloudflareComposition, 'resource "cloudflare_dns_record" "distribution"')
-  assert.match(distributionRecord, /zone_id\s*=\s*var\.cloudflare_domain\.zone_id/u)
-  assert.match(distributionRecord, /name\s*=\s*local\.hostname/u)
-  assert.match(distributionRecord, /type\s*=\s*"CNAME"/u)
-  assert.match(distributionRecord, /content\s*=\s*module\.artifact_pages\.distribution_domain_name/u)
-  assert.match(distributionRecord, /ttl\s*=\s*1/u)
-  assert.match(distributionRecord, /proxied\s*=\s*false/u)
-  assert.doesNotMatch(cloudflareComposition, /aws_route53_|cloudflare_zone\s/u)
-})
-
-test('composition docs include a real-plan review checklist and preserve live proof as T15', async () => {
-  const readme = await readFile(new URL('../modules/cloudflare-dns-acm/README.md', import.meta.url), 'utf8')
-  assert.match(readme, /## Real-plan review checklist/u)
-  assert.match(readme, /accepts any valid non-apex hostname beneath the supplied Cloudflare zone/u)
-  assert.match(readme, /cloudflare_domain\.hostname/u)
-  assert.match(readme, /certificate validation waiter completes before the CloudFront distribution/u)
-  assert.match(readme, /no Route 53 resources, apex record, unrelated Cloudflare records/u)
-  assert.match(readme, /live T15 proof/u)
-  assert.match(readme, /local validation script does not perform them/u)
-})
-
-test('Cloudflare hostname validation requires a valid non-apex name under the declared zone', async () => {
-  const domain = block(cloudflareVariables, 'variable "cloudflare_domain"')
-  assert.match(domain, /zone_id\s*=\s*string/u)
-  assert.match(domain, /zone_name\s*=\s*string/u)
-  assert.match(domain, /hostname\s*=\s*string/u)
-  assert.match(domain, /lower\(var\.cloudflare_domain\.hostname\) != lower\(var\.cloudflare_domain\.zone_name\)/u)
-  assert.match(domain, /endswith\(lower\(var\.cloudflare_domain\.hostname\), "\.\$\{lower\(var\.cloudflare_domain\.zone_name\)\}"\)/u)
-
-  const example = await readFile(new URL('../examples/cloudflare-dns-acm-consumer/main.tf', import.meta.url), 'utf8')
-  const providerConfig = await readFile(new URL('../examples/cloudflare-dns-acm-consumer/versions.tf', import.meta.url), 'utf8')
-  assert.match(example, /aws\.us_east_1\s*=\s*aws\.us_east_1/u)
-  assert.match(example, /cloudflare\s*=\s*cloudflare/u)
-  assert.match(example, /zone_name\s*=\s*var\.cloudflare_zone_name/u)
-  assert.match(example, /hostname\s*=\s*var\.aws_hostname/u)
-  assert.match(providerConfig, /provider\s+"aws"\s*\{\s*region\s*=\s*var\.aws_region/u)
-  assert.match(providerConfig, /alias\s*=\s*"us_east_1"\s+region\s*=\s*"us-east-1"/u)
-  assert.match(providerConfig, /provider\s+"cloudflare"/u)
-  assert.match(cloudflareOutputs, /certificate_arn/u)
 })

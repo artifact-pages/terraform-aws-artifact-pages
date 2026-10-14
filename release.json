@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "version": "0.1.0",
+  "repository": "artifact-pages/terraform-aws-artifact-pages",
+  "sourceTag": "terraform-aws/v0.1.0",
+  "sourceCommit": "1455c8fd9066d63b5a31c826f100518a57ff4780"
+}

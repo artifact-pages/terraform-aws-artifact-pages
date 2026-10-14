@@ -1,0 +1,22 @@
+name: Close pull requests to generated repository
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  close-generated-pull-request:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Point contributors to the source repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "This repository is generated from https://github.com/artifact-pages/artifact-pages. Please open issues and pull requests in the monorepo; changes here are replaced by the next module release."
+          gh pr close "$PR_NUMBER" --repo "$GITHUB_REPOSITORY"

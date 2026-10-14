@@ -7,6 +7,12 @@ tasks:
     cmds:
       - terraform fmt -recursive
 
+  check:
+    desc: Run the full offline module validation (fmt, validate, mocked terraform test, contract and Node tests; Terraform 1.9.8)
+    dir: '{{.TASKFILE_DIR}}'
+    cmds:
+      - ./scripts/validate.sh
+
   tf:init: &target
     desc: Initialize an explicit consumer deployment directory (TF_DIR)
     dir: '{{.TASKFILE_DIR}}'
