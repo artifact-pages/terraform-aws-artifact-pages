@@ -1,6 +1,6 @@
 module "artifact_pages" {
   source  = "artifact-pages/artifact-pages/aws"
-  version = "0.1.0"
+  version = "0.1.1"
 
   name_prefix               = var.name_prefix
   aws_region                = var.aws_region
